@@ -24,13 +24,10 @@ export async function onRequest(context) {
         fileUrl = `https://api.telegram.org/file/bot${env.TG_Bot_Token}/${filePath}`;
     }
 
-    // 优化文件获取请求，支持大文件
     const response = await fetch(fileUrl, {
         method: request.method,
         headers: request.headers,
         body: request.body,
-        // 增加读取超时，确保大文件能够完整获取
-        signal: AbortSignal.timeout(30000) // 30秒超时
     });
 
     // If the response is OK, proceed with further checks
