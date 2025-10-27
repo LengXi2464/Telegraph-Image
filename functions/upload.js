@@ -17,20 +17,25 @@ export async function onRequestPost(context) {
 
         const fileName = uploadFile.name;
         const fileExtension = fileName.split('.').pop().toLowerCase();
-        const fileSize = uploadFile.size;
-        
-        console.log(`Uploading file: ${fileName}, size: ${fileSize} bytes, type: ${uploadFile.type}`);
 
         const telegramFormData = new FormData();
         telegramFormData.append("chat_id", env.TG_Chat_ID);
-        
-        // 为了支持无限制上传，默认使用document方式上传所有文件
-        // 这样可以避免图片和其他媒体类型的大小限制
-        telegramFormData.append("document", uploadFile);
-        let apiEndpoint = 'sendDocument';
-        
-        // 记录上传方式
-        console.log(`Using ${apiEndpoint} for upload`);
+
+        // 根据文件类型选择合适的上传方式
+        let apiEndpoint;
+        if (uploadFile.type.startsWith('image/')) {
+            telegramFormData.append("photo", uploadFile);
+            apiEndpoint = 'sendPhoto';
+        } else if (uploadFile.type.startsWith('audio/')) {
+            telegramFormData.append("audio", uploadFile);
+            apiEndpoint = 'sendAudio';
+        } else if (uploadFile.type.startsWith('video/')) {
+            telegramFormData.append("video", uploadFile);
+            apiEndpoint = 'sendVideo';
+        } else {
+            telegramFormData.append("document", uploadFile);
+            apiEndpoint = 'sendDocument';
+        }
 
         const result = await sendToTelegram(telegramFormData, apiEndpoint, env);
 
@@ -94,48 +99,36 @@ function getFileId(response) {
 }
 
 async function sendToTelegram(formData, apiEndpoint, env, retryCount = 0) {
-    // 增加重试次数以提高大文件上传成功率
-    const MAX_RETRIES = 5;
+    const MAX_RETRIES = 2;
     const apiUrl = `https://api.telegram.org/bot${env.TG_Bot_Token}/${apiEndpoint}`;
 
     try {
-        // 使用更长的超时时间并优化请求配置以支持大文件
-        const response = await fetch(apiUrl, {
-            method: "POST",
-            body: formData,
-            // 允许更大的内容长度
-            headers: {
-                'Content-Type': 'multipart/form-data'
-            },
-            // 确保不会因为超时中断上传
-            signal: AbortSignal.timeout(60000 * (retryCount + 1)) // 每次重试增加超时时间
-        });
-        
+        const response = await fetch(apiUrl, { method: "POST", body: formData });
         const responseData = await response.json();
-        console.log(`Telegram API response: ${JSON.stringify(responseData)}`);
 
         if (response.ok) {
             return { success: true, data: responseData };
         }
 
-        // 记录错误信息
-        console.error(`Upload error: ${responseData.description || 'Unknown error'}`);
+        // 图片上传失败时转为文档方式重试
+        if (retryCount < MAX_RETRIES && apiEndpoint === 'sendPhoto') {
+            console.log('Retrying image as document...');
+            const newFormData = new FormData();
+            newFormData.append('chat_id', formData.get('chat_id'));
+            newFormData.append('document', formData.get('photo'));
+            return await sendToTelegram(newFormData, 'sendDocument', env, retryCount + 1);
+        }
 
         return {
             success: false,
             error: responseData.description || 'Upload to Telegram failed'
         };
     } catch (error) {
-        console.error(`Network error (attempt ${retryCount + 1}/${MAX_RETRIES}):`, error);
-        
+        console.error('Network error:', error);
         if (retryCount < MAX_RETRIES) {
-            // 增加重试间隔，避免频繁请求
-            const delay = 2000 * Math.pow(2, retryCount); // 指数退避策略
-            console.log(`Retrying in ${delay}ms...`);
-            await new Promise(resolve => setTimeout(resolve, delay));
+            await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1)));
             return await sendToTelegram(formData, apiEndpoint, env, retryCount + 1);
         }
-        
-        return { success: false, error: `Network error occurred after ${MAX_RETRIES} attempts` };
+        return { success: false, error: 'Network error occurred' };
     }
 }
